@@ -204,8 +204,6 @@ class PresetSubtransaction(models.Model):
     fraction = models.FloatField(default=1)
 
 
-# ------------------------------------------------------------------------------
-# Account sync
 
 
 class AccountBalanceCache(models.Model):
