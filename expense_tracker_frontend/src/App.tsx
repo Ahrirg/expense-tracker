@@ -12,6 +12,7 @@ import {Login} from "./pages/Auth/Login";
 import {UserEdit} from "./pages/Auth/UserEdit";
 import {ChainedAccountCreate} from "./pages/ChainedAccounts/ChainedAccountCreate";
 import {ChainedAccounts} from "./pages/ChainedAccounts/ChainedAccounts";
+import {Expenses} from "./pages/Expenses/Expenses";
 import {Preset} from "./pages/Presets/Preset";
 import {PresetCreate} from "./pages/Presets/PresetCreate";
 import {PresetDelete} from "./pages/Presets/PresetDelete";
@@ -41,6 +42,7 @@ function App() {
         <Route path="accounts/:id/delete" element={<AccountDelete />}></Route>
         <Route path="accounts/:id/edit" element={<AccountEdit />}></Route>
         <Route path="accounts/:id/sync" element={<AccountSync />}></Route>
+        <Route path="expenses" element={<Expenses />}></Route>
         <Route path="chained_accounts" element={<ChainedAccounts />}></Route>
         <Route
           path="chained_accounts/add"

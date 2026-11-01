@@ -1,6 +1,7 @@
 from django.conf import settings
 from django.db import models
 from django.db.models.signals import post_delete
+from django.db.models.signals import post_save
 from django.dispatch import receiver
 
 # ------------------------------------------------------------------------------
@@ -269,3 +270,17 @@ class TransactionCreateBatchRemainingTransactions(models.Model):
 def delete_transaction_image_file(sender, instance, **kwargs):
     if instance.image:
         instance.image.delete(save=False)
+
+
+@receiver(post_save, sender=Subtransaction)
+def create_chained_subtransaction_requests(sender, instance, created, **kwargs):
+    if not created:
+        return
+    for chained in ChainedAccount.objects.filter(master_account=instance.account).select_related(
+        'slave_account'
+    ):
+        ChainedSubtransactionPendingNew.objects.create(
+            slave_user=chained.slave_account.user,
+            master_subtransaction=instance,
+            chained_account=chained,
+        )
