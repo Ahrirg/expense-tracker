@@ -5,6 +5,12 @@ from . import models
 from .db_utils import format_return_iso
 
 
+class UserSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = User
+        fields = ('id', 'username')
+
+
 class AccountSerializer(serializers.ModelSerializer):
     class Meta:
         model = models.Account
@@ -94,3 +100,22 @@ class TransactionCreateBatchRemainingTransactionsSerializer(serializers.ModelSer
     class Meta:
         model = models.TransactionCreateBatchRemainingTransactions
         fields = '__all__'
+
+
+class ChainedAccountSerializer(serializers.ModelSerializer):
+    master_account_name = serializers.CharField(source='master_account.name', read_only=True)
+    slave_account_name = serializers.CharField(source='slave_account.name', read_only=True)
+
+    class Meta:
+        model = models.ChainedAccount
+        fields = '__all__'
+
+
+class ChainedAccountRequestPendingNewSerializer(serializers.ModelSerializer):
+    master_username = serializers.CharField(source='master.username', read_only=True)
+    slave_username = serializers.CharField(source='slave.username', read_only=True)
+
+    class Meta:
+        model = models.ChainedAccountRequestPendingNew
+        fields = '__all__'
+

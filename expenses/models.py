@@ -107,6 +107,8 @@ class ChainedAccountRequestPendingNew(models.Model):
         settings.AUTH_USER_MODEL, related_name='slave', on_delete=models.CASCADE
     )
 
+    master_account = models.ForeignKey(Account, on_delete=models.CASCADE, null=True, blank=True)
+
     desc = models.CharField(max_length=256, verbose_name="description", blank=True)
 
     relation = models.IntegerField(default=0)

@@ -17,8 +17,12 @@ urlpatterns = [
     re_path(r'^tags.*$', react_frontend.react_frontend),
     re_path(r'^user.*$', react_frontend.react_frontend),
     re_path(r'^sync.*$', react_frontend.react_frontend),
+    re_path(r'^chained_accounts.*$', react_frontend.react_frontend),
     # api views
     path('api/accounts', api_views.AccountView.as_view()),
+    path('api/users', api_views.UsersView.as_view()),
+    path('api/chained_accounts', api_views.ChainedAccountView.as_view()),
+    path('api/chained_account_requests', api_views.ChainedAccountRequestView.as_view()),
     path('api/tags', api_views.TagView.as_view()),
     path('api/transactions', api_views.TransactionView.as_view()),
     path('api/presets', api_views.PresetView.as_view()),
