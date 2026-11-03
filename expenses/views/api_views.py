@@ -7,6 +7,7 @@ from typing import Any
 import requests
 from django.contrib.auth.models import User
 from django.core.files.base import ContentFile
+from django.db.models import Q
 from rest_framework import authentication
 from rest_framework import generics
 from rest_framework import status
@@ -66,6 +67,16 @@ class AccountView(generics.ListCreateAPIView):
         id = self.request.query_params.get('id')
         if id is not None:
             queryset = queryset.filter(id=id)
+
+        limit = self.request.query_params.get("limit")
+        offset = self.request.query_params.get("offset")
+        if limit is not None and offset is not None:
+            limit = int(limit)
+            offset = int(offset)
+            queryset = queryset[offset : offset + limit]
+        elif limit is not None or offset is not None:
+            raise ValueError("Either both limit and offset must be provided or neither.")
+
         return queryset
 
     def post(self, request, *args, **kwargs):
@@ -93,6 +104,212 @@ class AccountView(generics.ListCreateAPIView):
             return Response(status=status.HTTP_401_UNAUTHORIZED)
 
 
+class UsersView(generics.ListAPIView):
+    queryset = User.objects.all()
+    serializer_class = serializers.UserSerializer
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        queryset = queryset.exclude(id=self.request.user.id).order_by('username')
+
+        limit = self.request.query_params.get("limit")
+        offset = self.request.query_params.get("offset")
+        if limit is not None and offset is not None:
+            limit = int(limit)
+            offset = int(offset)
+            queryset = queryset[offset : offset + limit]
+        elif limit is not None or offset is not None:
+            raise ValueError("Either both limit and offset must be provided or neither.")
+
+        return queryset
+
+
+class ExpensesView(generics.ListAPIView):
+    queryset = models.ChainedSubtransaction.objects.all()
+    serializer_class = serializers.ChainedSubtransactionSerializer
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        queryset = (
+            queryset
+            .filter(slave_subtransaction__account__user=self.request.user)
+            .select_related(
+                'slave_subtransaction__transaction',
+                'slave_subtransaction__account',
+                'master_subtransaction__account__user',
+            )
+            .order_by('-slave_subtransaction__transaction__date_time', '-id')
+        )
+
+        limit = self.request.query_params.get("limit")
+        offset = self.request.query_params.get("offset")
+        if limit is not None and offset is not None:
+            limit = int(limit)
+            offset = int(offset)
+            queryset = queryset[offset : offset + limit]
+        elif limit is not None or offset is not None:
+            raise ValueError("Either both limit and offset must be provided or neither.")
+
+        return queryset
+
+
+class ExpensesPendingView(generics.ListCreateAPIView):
+    queryset = models.ChainedSubtransactionPendingNew.objects.all()
+    serializer_class = serializers.ChainedSubtransactionPendingNewSerializer
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        queryset = (
+            queryset
+            .filter(slave_user=self.request.user)
+            .select_related(
+                'master_subtransaction__transaction',
+                'master_subtransaction__account__user',
+                'chained_account__slave_account',
+            )
+            .order_by('-master_subtransaction__transaction__date_time', '-id')
+        )
+
+        limit = self.request.query_params.get("limit")
+        offset = self.request.query_params.get("offset")
+        if limit is not None and offset is not None:
+            limit = int(limit)
+            offset = int(offset)
+            queryset = queryset[offset : offset + limit]
+        elif limit is not None or offset is not None:
+            raise ValueError("Either both limit and offset must be provided or neither.")
+
+        return queryset
+
+    def post(self, request, *args, **kwargs):
+        pending = models.ChainedSubtransactionPendingNew.objects.select_related(
+            'master_subtransaction__transaction', 'chained_account__slave_account'
+        ).get(id=self.request.data['id'])
+        if pending.slave_user != self.request.user:
+            return Response(status=status.HTTP_401_UNAUTHORIZED)
+
+        if self.request.data['action'] == "accept":
+            master_sub = pending.master_subtransaction
+            transaction = models.Transaction.objects.create(
+                desc=master_sub.transaction.desc,
+                date_time=master_sub.transaction.date_time,
+                user=self.request.user,
+                timezone_offset=master_sub.transaction.timezone_offset,
+            )
+            slave_sub = models.Subtransaction.objects.create(
+                transaction=transaction,
+                account=pending.chained_account.slave_account,
+                amount=-master_sub.amount,
+            )
+            models.ChainedSubtransaction.objects.create(
+                master_subtransaction=master_sub,
+                slave_subtransaction=slave_sub,
+                relation=pending.chained_account.relation,
+            )
+            pending.delete()
+            return Response(status=status.HTTP_201_CREATED)
+        elif self.request.data['action'] == "decline":
+            models.ChainedSubtransactionIgnored.objects.create(
+                slave_user=pending.slave_user,
+                master_subtransaction=pending.master_subtransaction,
+                chained_account=pending.chained_account,
+            )
+            pending.delete()
+            return Response(status=status.HTTP_200_OK)
+        return Response(status=status.HTTP_400_BAD_REQUEST)
+
+
+class ChainedAccountView(generics.ListCreateAPIView):
+    queryset = models.ChainedAccount.objects.all()
+    serializer_class = serializers.ChainedAccountSerializer
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        queryset = queryset.filter(
+            Q(master_account__user=self.request.user) | Q(slave_account__user=self.request.user)
+        ).order_by('id')
+
+        limit = self.request.query_params.get("limit")
+        offset = self.request.query_params.get("offset")
+        if limit is not None and offset is not None:
+            limit = int(limit)
+            offset = int(offset)
+            queryset = queryset[offset : offset + limit]
+        elif limit is not None or offset is not None:
+            raise ValueError("Either both limit and offset must be provided or neither.")
+
+        return queryset
+
+    def post(self, request, *args, **kwargs):
+        if self.request.data['action'] == "delete":
+            chained = models.ChainedAccount.objects.get(id=self.request.data['id'])
+            if self.request.user in (chained.master_account.user, chained.slave_account.user):
+                chained.delete()
+                return Response(status=status.HTTP_200_OK)
+            return Response(status=status.HTTP_401_UNAUTHORIZED)
+        return Response(status=status.HTTP_400_BAD_REQUEST)
+
+
+class ChainedAccountRequestView(generics.ListCreateAPIView):
+    queryset = models.ChainedAccountRequestPendingNew.objects.all()
+    serializer_class = serializers.ChainedAccountRequestPendingNewSerializer
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        queryset = queryset.filter(
+            Q(master=self.request.user) | Q(slave=self.request.user)
+        ).order_by('id')
+
+        limit = self.request.query_params.get("limit")
+        offset = self.request.query_params.get("offset")
+        if limit is not None and offset is not None:
+            limit = int(limit)
+            offset = int(offset)
+            queryset = queryset[offset : offset + limit]
+        elif limit is not None or offset is not None:
+            raise ValueError("Either both limit and offset must be provided or neither.")
+
+        return queryset
+
+    def post(self, request, *args, **kwargs):
+        if self.request.data['action'] == "create":
+            slave = User.objects.filter(username=self.request.data['slave_username']).first()
+            if slave is None or slave == self.request.user:
+                raise ValidationError({'slave_username': 'Invalid user.'})
+            master_account = models.Account.objects.get(id=self.request.data['master_account'])
+            if master_account.user != self.request.user:
+                return Response(status=status.HTTP_401_UNAUTHORIZED)
+            models.ChainedAccountRequestPendingNew.objects.create(
+                master=self.request.user,
+                slave=slave,
+                master_account=master_account,
+                desc=self.request.data.get('Description', ''),
+                relation=int(self.request.data.get('relation', 0)),
+            )
+            return Response(status=status.HTTP_201_CREATED)
+        elif self.request.data['action'] == "accept":
+            pending = models.ChainedAccountRequestPendingNew.objects.get(id=self.request.data['id'])
+            slave_account = models.Account.objects.get(id=self.request.data['slave_account'])
+            if pending.slave != self.request.user or slave_account.user != self.request.user:
+                return Response(status=status.HTTP_401_UNAUTHORIZED)
+            if pending.master_account is None:
+                raise ValidationError({'master_account': 'Request has no master account.'})
+            models.ChainedAccount.objects.create(
+                master_account=pending.master_account,
+                slave_account=slave_account,
+                relation=pending.relation,
+            )
+            pending.delete()
+            return Response(status=status.HTTP_201_CREATED)
+        elif self.request.data['action'] == "decline":
+            pending = models.ChainedAccountRequestPendingNew.objects.get(id=self.request.data['id'])
+            if self.request.user in (pending.master, pending.slave):
+                pending.delete()
+                return Response(status=status.HTTP_200_OK)
+            return Response(status=status.HTTP_401_UNAUTHORIZED)
+        return Response(status=status.HTTP_400_BAD_REQUEST)
+
+
 class TagView(generics.ListCreateAPIView):
     queryset = models.Tag.objects.all()
     serializer_class = serializers.TagSerializer
@@ -104,6 +321,17 @@ class TagView(generics.ListCreateAPIView):
         id = self.request.query_params.get('id')
         if id is not None:
             queryset = queryset.filter(id=id)
+            return queryset
+
+        limit = self.request.query_params.get("limit")
+        offset = self.request.query_params.get("offset")
+        if limit is not None and offset is not None:
+            limit = int(limit)
+            offset = int(offset)
+            queryset = queryset[offset : offset + limit]
+        elif limit is not None or offset is not None:
+            raise ValueError("Either both limit and offset must be provided or neither.")
+
         return queryset
 
     def post(self, request, *args, **kwargs):
@@ -145,6 +373,17 @@ class TransactionView(generics.ListCreateAPIView):
         id = self.request.query_params.get("id")
         if id is not None:
             queryset = queryset.filter(id=id)
+            return queryset
+
+        limit = self.request.query_params.get("limit")
+        offset = self.request.query_params.get("offset")
+        if limit is not None and offset is not None:
+            limit = int(limit)
+            offset = int(offset)
+            queryset = queryset[offset : offset + limit]
+        elif limit is not None or offset is not None:
+            raise ValueError("Either both limit and offset must be provided or neither.")
+
         return queryset
 
     def post(self, request, *args, **kwargs):
@@ -308,6 +547,17 @@ class PresetView(generics.ListCreateAPIView):
         tag = self.request.query_params.get('tag')
         if tag is not None:
             queryset = queryset.filter(preset_tags__tag=tag)
+
+        limit = self.request.query_params.get("limit")
+        offset = self.request.query_params.get("offset")
+
+        if limit is not None and offset is not None:
+            limit = int(limit)
+            offset = int(offset)
+            queryset = queryset[offset : offset + limit]
+        elif limit is not None or offset is not None:
+            raise ValueError("Either both limit and offset must be provided or neither.")
+
         return queryset
 
     def post(self, request, *args, **kwargs):
@@ -429,6 +679,16 @@ class TransactionTagsView(generics.ListAPIView):
         if tag_id is not None:
             queryset = queryset.filter(tag=require_int(tag_id, 'tag'))
 
+        limit = self.request.query_params.get("limit")
+        offset = self.request.query_params.get("offset")
+        if limit is not None and offset is not None:
+            queryset = queryset.order_by('-transaction__date_time', '-id')
+            limit = int(limit)
+            offset = int(offset)
+            queryset = queryset[offset : offset + limit]
+        elif limit is not None or offset is not None:
+            raise ValueError("Either both limit and offset must be provided or neither.")
+
         return queryset
 
 
@@ -439,9 +699,11 @@ class SubtransactionView(generics.ListAPIView):
     def get_queryset(self):
         queryset = super().get_queryset()
         queryset = queryset.order_by('-transaction__date_time', '-id')
+
         transaction_id = self.request.query_params.get('transaction')
         if transaction_id is not None:
             queryset = queryset.filter(transaction=require_int(transaction_id, 'transaction'))
+
         account_id = self.request.query_params.get('account')
         if account_id is not None:
             queryset = queryset.filter(account=require_int(account_id, 'account'))
@@ -451,6 +713,16 @@ class SubtransactionView(generics.ListAPIView):
         date_gte = self.request.query_params.get('date_gte')
         if date_gte is not None:
             queryset = queryset.filter(transaction__date_time__gte=require_dt(date_gte, 'date_gte'))
+
+        limit = self.request.query_params.get("limit")
+        offset = self.request.query_params.get("offset")
+        if limit is not None and offset is not None:
+            limit = int(limit)
+            offset = int(offset)
+            queryset = queryset[offset : offset + limit]
+        elif limit is not None or offset is not None:
+            raise ValueError("Either both limit and offset must be provided or neither.")
+
         return queryset
 
 
@@ -729,3 +1001,61 @@ def next_batch_item_id(request, batch_id, current_id):
         return Response({'id': next_item.id}, status=status.HTTP_200_OK)
     else:
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class TransactionsAndRelatedDataView(generics.GenericAPIView):
+    serializer_class = serializers.TokenSerializer
+
+    def get(self, request):
+        transactions = (
+            models.Transaction.objects.all().order_by('-date_time').filter(user=request.user)
+        )
+        tag_id = request.query_params.get("tagid")
+        if tag_id is not None:
+            transactions = transactions.filter(transaction_tags__tag_id=int(tag_id))
+        account_id = request.query_params.get("accountid")
+        if account_id is not None:
+            transactions = transactions.filter(subtransactions__account=int(account_id))
+
+        limit = request.query_params.get("limit")
+        offset = request.query_params.get("offset")
+        if limit is not None and offset is not None:
+            limit = int(limit)
+            offset = int(offset)
+            transactions = transactions[offset : offset + limit]
+        elif limit is not None or offset is not None:
+            raise ValueError("Either both limit and offset must be provided or neither.")
+
+        subtransactions = (
+            models.Subtransaction.objects
+            .filter(transaction__in=transactions)
+            .order_by('-transaction__date_time', '-id')
+            .distinct()
+        )
+
+        transaction_tags = models.TransactionTag.objects.filter(
+            transaction__in=transactions
+        ).distinct()
+        if tag_id is not None:
+            transaction_tags = transaction_tags.filter(tag_id=int(tag_id))
+
+        tags = models.Tag.objects.filter(transaction_tags__transaction__in=transactions).distinct()
+
+        accounts = models.Account.objects.filter(subtransactions__in=subtransactions).distinct()
+
+        sync_events = models.AccountSyncEvent.objects.filter(
+            subtransaction__in=subtransactions
+        ).distinct()
+
+        return Response({
+            "transactions": serializers.TransactionSerializer(transactions, many=True).data,
+            "transactionTags": serializers.TransactionTagsSerializer(
+                transaction_tags, many=True
+            ).data,
+            "tags": serializers.TagSerializer(tags, many=True).data,
+            "subtransactions": serializers.SubtransactionSerializer(
+                subtransactions, many=True
+            ).data,
+            "accounts": serializers.AccountSerializer(accounts, many=True).data,
+            "syncEvent": serializers.AccountSyncEventSerializer(sync_events, many=True).data,
+        })
